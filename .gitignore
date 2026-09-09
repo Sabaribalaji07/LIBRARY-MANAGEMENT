@@ -1,0 +1,5 @@
+node_modules/
+library.sqlite
+.DS_Store
+*.log
+/tmp
