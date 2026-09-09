@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQLite Database Explorer — CampusLib</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --table-stripe: #1e293b;
+      --table-hover: #273549;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .title-area h1 {
+      font-size: 24px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .title-area p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+    .badge {
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+    }
+    .btn {
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid transparent;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-outline { background: var(--card-bg); color: var(--text); border-color: var(--border); }
+    .btn-outline:hover { background: var(--table-hover); }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .tab-btn {
+      padding: 10px 20px;
+      background: var(--card-bg);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+    .tab-count {
+      background: rgba(0, 0, 0, 0.25);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .search-box {
+      position: relative;
+      flex: 1;
+      max-width: 400px;
+    }
+    .search-box i {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+    }
+    .search-box input {
+      width: 100%;
+      padding: 10px 12px 10px 38px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .search-box input:focus { border-color: var(--primary); }
+
+    .table-container {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow-x: auto;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+    th {
+      background: #182234;
+      padding: 14px 16px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      color: #cbd5e1;
+    }
+    tr:hover td {
+      background: var(--table-hover);
+      color: white;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .tag-green { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .tag-blue { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
+    .tag-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .tag-red { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .code { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #38bdf8; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title-area">
+      <h1><i class="fa-solid fa-database" style="color: #6366f1;"></i> SQLite Database Explorer</h1>
+      <p>File: <span class="badge">AI EMMERSION/library.sqlite</span> &bull; Driver: <span class="badge">better-sqlite3</span></p>
+    </div>
+    <div class="actions">
+      <a href="/" class="btn btn-primary"><i class="fa-solid fa-desktop"></i> Open CampusLib App</a>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTable('books')">
+      <i class="fa-solid fa-book"></i> Books Table <span class="tab-count" id="books-count">0</span>
+    </button>
+    <button class="tab-btn" onclick="switchTable('users')">
+      <i class="fa-solid fa-users"></i> Users Table <span class="tab-count" id="users-count">0</span>
+    </button>
+    <button class="tab-btn" onclick="switchTable('borrow_records')">
+      <i class="fa-solid fa-hand-holding-hand"></i> Borrow Records <span class="tab-count" id="borrows-count">0</span>
+    </button>
+  </div>
+
+  <div class="controls">
+    <div class="search-box">
+      <i class="fa-solid fa-magnifying-glass"></i>
+      <input type="text" id="searchInput" placeholder="Filter rows in this table..." oninput="filterTable()">
+    </div>
+    <button class="btn btn-outline" onclick="loadData()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+  </div>
+
+  <div class="table-container">
+    <table id="dataTable">
+      <thead id="tableHead"></thead>
+      <tbody id="tableBody">
+        <tr><td colspan="10" style="text-align: center; padding: 40px; color: var(--text-muted);"><i class="fa-solid fa-spinner fa-spin"></i> Loading database tables...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    let dbData = { books: [], users: [], borrow_records: [] };
+    let currentTable = 'books';
+
+    async function loadData() {
+      try {
+        const res = await fetch('/api/stats/tables');
+        dbData = await res.json();
+        document.getElementById('books-count').textContent = dbData.books.length;
+        document.getElementById('users-count').textContent = dbData.users.length;
+        document.getElementById('borrows-count').textContent = dbData.borrow_records.length;
+        renderTable();
+      } catch (err) {
+        document.getElementById('tableBody').innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--danger); padding: 30px;"><i class="fa-solid fa-triangle-exclamation"></i> Error connecting to database: ${err.message}</td></tr>`;
+      }
+    }
+
+    function switchTable(table) {
+      currentTable = table;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+      document.getElementById('searchInput').value = '';
+      renderTable();
+    }
+
+    function filterTable() {
+      const q = document.getElementById('searchInput').value.toLowerCase();
+      const rows = document.querySelectorAll('#tableBody tr');
+      rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(q) ? '' : 'none';
+      });
+    }
+
+    function renderTable() {
+      const items = dbData[currentTable] || [];
+      const thead = document.getElementById('tableHead');
+      const tbody = document.getElementById('tableBody');
+
+      if (items.length === 0) {
+        thead.innerHTML = '';
+        tbody.innerHTML = '<tr><td style="text-align: center; padding: 30px;">No records found.</td></tr>';
+        return;
+      }
+
+      const columns = Object.keys(items[0]);
+      thead.innerHTML = '<tr>' + columns.map(col => `<th>${col.replace('_', ' ')}</th>`).join('') + '</tr>';
+
+      tbody.innerHTML = items.map(item => {
+        return '<tr>' + columns.map(col => {
+          let val = item[col];
+          if (val === null || val === undefined) return '<td style="color: #64748b;">NULL</td>';
+          if (col === 'status') {
+            if (val === 'Available' || val === 'returned') return `<td><span class="tag tag-green">${val}</span></td>`;
+            if (val === 'Issued' || val === 'active') return `<td><span class="tag tag-blue">${val}</span></td>`;
+            if (val === 'overdue') return `<td><span class="tag tag-red">${val}</span></td>`;
+          }
+          if (col === 'role') {
+            return `<td><span class="tag ${val === 'librarian' ? 'tag-amber' : 'tag-blue'}">${val}</span></td>`;
+          }
+          if (col === 'isbn' || col === 'rack_number' || col === 'user_id' || col === 'student_code') {
+            return `<td><span class="code">${val}</span></td>`;
+          }
+          return `<td>${val}</td>`;
+        }).join('') + '</tr>';
+      }).join('');
+    }
+
+    loadData();
+  </script>
+</body>
+</html>

@@ -53,4 +53,23 @@ router.get('/overview', (req, res) => {
   }
 });
 
+// GET /api/stats/tables - Direct table data for DB inspection
+router.get('/tables', (req, res) => {
+  try {
+    const users = db.prepare('SELECT * FROM users').all();
+    const books = db.prepare('SELECT * FROM books').all();
+    const borrow_records = db.prepare(`
+      SELECT br.*, u.name as student_name, u.user_id as student_code, b.title as book_title, b.isbn as book_isbn 
+      FROM borrow_records br 
+      LEFT JOIN users u ON br.user_id = u.id 
+      LEFT JOIN books b ON br.book_id = b.id
+    `).all();
+
+    res.json({ users, books, borrow_records });
+  } catch (err) {
+    console.error('Tables export error:', err);
+    res.status(500).json({ error: 'Failed to fetch tables.' });
+  }
+});
+
 module.exports = router;
