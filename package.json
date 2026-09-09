@@ -1,0 +1,25 @@
+{
+  "name": "digital-library-management-system",
+  "version": "1.0.0",
+  "description": "A modern, beginner-friendly Digital Library Management System for College/School Field-Visit",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node test/api.test.js"
+  },
+  "keywords": [
+    "library",
+    "management-system",
+    "sqlite",
+    "express",
+    "college-project"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
