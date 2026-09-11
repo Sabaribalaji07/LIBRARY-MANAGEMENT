@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { db } = require('../db');
+
+// In-memory session store for authentication tokens
+const activeSessions = new Map();
 
 // POST /api/auth/login
 router.post('/login', (req, res) => {
@@ -28,16 +33,41 @@ router.post('/login', (req, res) => {
       return res.status(401).json({ error: `Account found, but it is not registered as a ${role}.` });
     }
 
-    // Password check (plain text for beginner simplicity & presentation)
-    if (user.password !== password) {
+    // Password verification via bcrypt (with fallback for legacy plaintext migration)
+    const isBcryptHash = user.password.startsWith('$2a$') || user.password.startsWith('$2b$');
+    const isPasswordValid = isBcryptHash 
+      ? bcrypt.compareSync(password, user.password)
+      : (user.password === password);
+
+    if (!isPasswordValid) {
       return res.status(401).json({ error: 'Incorrect password.' });
     }
 
-    // Return sanitized user object
-    const { password: _, ...userData } = user;
+    // If legacy plaintext was matched, seamlessly upgrade hash in database
+    if (!isBcryptHash) {
+      const newHash = bcrypt.hashSync(password, 10);
+      db.prepare('UPDATE users SET password = ? WHERE id = ?').run(newHash, user.id);
+    }
+
+    // Generate secure session token
+    const token = crypto.randomBytes(32).toString('hex');
+    const sessionData = {
+      id: user.id,
+      user_id: user.user_id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      department: user.department,
+      phone: user.phone,
+      loginAt: new Date().toISOString()
+    };
+    activeSessions.set(token, sessionData);
+
+    // Return sanitized user object & session token (never return password hash)
     res.json({
       message: 'Login successful',
-      user: userData
+      token: token,
+      user: sessionData
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -49,12 +79,18 @@ router.post('/login', (req, res) => {
 router.get('/demo-users', (req, res) => {
   try {
     const users = db.prepare(`
-      SELECT id, user_id, name, email, password, role, department
+      SELECT id, user_id, name, email, role, department
       FROM users
       ORDER BY role DESC, name ASC
     `).all();
 
-    res.json(users);
+    // Map known display passwords for 1-click demo interface helper
+    const demoPayload = users.map(u => ({
+      ...u,
+      password: u.role === 'librarian' ? 'admin' : '123'
+    }));
+
+    res.json(demoPayload);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch demo users.' });
   }

@@ -1,5 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const bcrypt = require('bcryptjs');
 
 const dbPath = path.join(__dirname, '..', 'library.sqlite');
 const db = new Database(dbPath);
@@ -48,6 +49,21 @@ function initDatabase() {
   `);
 
   seedData();
+  migratePasswordsToHash();
+}
+
+// Auto-migrate any unhashed plaintext passwords to bcrypt hash (cost factor 10)
+function migratePasswordsToHash() {
+  const users = db.prepare('SELECT id, password FROM users').all();
+  const updateStmt = db.prepare('UPDATE users SET password = ? WHERE id = ?');
+  
+  users.forEach(u => {
+    // Check if password is not already a bcrypt hash ($2a$ or $2b$)
+    if (!u.password.startsWith('$2a$') && !u.password.startsWith('$2b$')) {
+      const hashed = bcrypt.hashSync(u.password, 10);
+      updateStmt.run(hashed, u.id);
+    }
+  });
 }
 
 // Seed initial realistic data for college library demonstration
@@ -68,7 +84,7 @@ function seedData() {
         user_id: 'LIB001',
         name: 'Mrs. K. Vasanthi',
         email: 'librarian@college.edu',
-        password: 'admin',
+        password: bcrypt.hashSync('admin', 10),
         role: 'librarian',
         department: 'Central Library',
         phone: '+91 98450 11223'
@@ -77,7 +93,7 @@ function seedData() {
         user_id: 'CS2101',
         name: 'Arun Kumar',
         email: 'arun.cs@college.edu',
-        password: '123',
+        password: bcrypt.hashSync('123', 10),
         role: 'student',
         department: 'Computer Science & Engg',
         phone: '+91 97123 45670'
@@ -86,7 +102,7 @@ function seedData() {
         user_id: 'IT2142',
         name: 'Priya Sharma',
         email: 'priya.it@college.edu',
-        password: '123',
+        password: bcrypt.hashSync('123', 10),
         role: 'student',
         department: 'Information Technology',
         phone: '+91 98234 56781'
@@ -95,7 +111,7 @@ function seedData() {
         user_id: 'EC2118',
         name: 'Rahul Verma',
         email: 'rahul.ec@college.edu',
-        password: '123',
+        password: bcrypt.hashSync('123', 10),
         role: 'student',
         department: 'Electronics & Comm Engg',
         phone: '+91 99345 67892'
@@ -104,7 +120,7 @@ function seedData() {
         user_id: 'ME2130',
         name: 'Sneha Patel',
         email: 'sneha.me@college.edu',
-        password: '123',
+        password: bcrypt.hashSync('123', 10),
         role: 'student',
         department: 'Mechanical Engineering',
         phone: '+91 96456 78903'
