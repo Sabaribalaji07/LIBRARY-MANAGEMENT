@@ -1,8 +1,8 @@
 // Centralized API Client for Digital Library Management System
-// Auto-detects backend URL so it works seamlessly on both http://localhost:3001 and VS Code Live Server (port 5500)
-const API_BASE = (window.location.port === '3001') 
-  ? '' 
-  : (window.location.protocol === 'file:' ? 'http://localhost:3001' : (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1') ? 'http://localhost:3001' : ''));
+// Uses relative paths when served from Express, or points to http://localhost:3000 when opened via Live Server
+const API_BASE = (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '3000' && window.location.port !== '3001'))
+  ? 'http://localhost:3000'
+  : '';
 
 const API = {
   // Auth

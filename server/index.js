@@ -10,7 +10,7 @@ const statsRoutes = require('./routes/stats');
 const studentsRoutes = require('./routes/students');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
 // Initialize Database & seed if needed
 initDatabase();
