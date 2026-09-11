@@ -400,6 +400,11 @@ const app = {
       }
     }
 
+    const statusFilter = document.getElementById('catalog-status-filter');
+    if (statusFilter && !statusFilter.dataset.userInteracted) {
+      statusFilter.value = 'All';
+    }
+
     await this.loadCategories();
     await this.fetchAndRenderBooks();
   },
@@ -438,6 +443,8 @@ const app = {
   },
 
   handleFilterChange() {
+    const statusFilter = document.getElementById('catalog-status-filter');
+    if (statusFilter) statusFilter.dataset.userInteracted = 'true';
     this.fetchAndRenderBooks();
   },
 
