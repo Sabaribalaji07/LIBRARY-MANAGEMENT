@@ -34,7 +34,7 @@ During real-world college and school library field visits, several recurring pai
 - **Runtime**: Node.js (v18.x / v20.x LTS)
 - **Web Framework**: Express.js (`v4.21.2`) REST API
 - **Cross-Origin Resource Sharing**: `cors` (`v2.8.5`)
-- **Password Security & Hashing**: `bcryptjs` (`v2.4.3`) using Blowfish cipher with 10 salt rounds (zero plaintext credentials in database).
+- **Password Security & Hashing**: `bcryptjs` (`^3.0.3`) using Blowfish cipher with 10 salt rounds (zero plaintext credentials in database).
 - **Session Management**: Cryptographic random token generator (`crypto.randomBytes(32)`) with sanitized user session payloads.
 
 ### 2. Database & Persistence Layer
@@ -74,7 +74,7 @@ During real-world college and school library field visits, several recurring pai
 
 ## 💰 Overdue Fine Calculation Algorithm
 
-The system incorporates an automated fine calculation formula implemented in [`server/routes/borrows.js`](file:///Users/sabaribalajic.k/Documents/AI%20IMMERSION/server/routes/borrows.js):
+The system incorporates an automated fine calculation formula implemented in [`server/routes/borrows.js`](server/routes/borrows.js):
 
 $$\text{Days Overdue} = \max\left(0, \left\lfloor \frac{\text{Return Date} - \text{Due Date}}{86,400,000 \text{ ms}} \right\rfloor\right)$$
 
@@ -170,7 +170,7 @@ To prevent race conditions when multiple users attempt simultaneous checkout of 
 
 ## 🧪 Automated Unit & Integration Testing
 
-The project includes an end-to-end automated test harness in [`test/api.test.js`](file:///Users/sabaribalajic.k/Documents/AI%20IMMERSION/test/api.test.js).
+The project includes an end-to-end automated test harness in [`test/api.test.js`](test/api.test.js).
 
 ### Run Test Suite:
 ```bash
@@ -210,7 +210,7 @@ npm test
 ### 1. Installation
 ```bash
 # Navigate to project directory
-cd "AI IMMERSION"
+cd LIBRARY-MANAGEMENT
 
 # Install dependencies (express, better-sqlite3, cors, bcryptjs)
 npm install
