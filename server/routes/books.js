@@ -1,9 +1,30 @@
+/**
+ * @fileoverview Book Inventory and Catalog Management API Routes
+ * @description Provides full CRUD capabilities for library volumes, multi-attribute
+ *              live catalog filtering, shelf rack lookups, and active circulation audit.
+ * @module server/routes/books
+ */
+
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
 
-// GET /api/books - Search & filter books
-router.get('/', (req, res) => {
+/**
+ * GET /api/books
+ * @summary Search, filter, and paginate catalog books
+ * @description Supports multi-parameter substring searching across title, author,
+ *              ISBN, category, and rack number with availability filtering.
+ * 
+ * @route GET /api/books
+ * @param {string} [req.query.q] - Search keyword matching title, author, isbn, rack
+ * @param {string} [req.query.category] - Filter by specific category or 'All'
+ * @param {string} [req.query.status] - Filter by 'Available', 'Issued', or 'All'
+ * @param {string} [req.query.rack] - Filter by physical rack identifier
+ * 
+ * @returns {200} Array of book objects
+ * @returns {500} Error envelope
+ */
+router.get('/', (req, res, next) => {
   try {
     const { q, category, status, rack } = req.query;
 
@@ -15,6 +36,7 @@ router.get('/', (req, res) => {
     `;
     const params = [];
 
+    // Parametric search keyword boundary (prevents SQL injection)
     if (q && q.trim()) {
       query += ` AND (
         title LIKE ? OR
@@ -47,13 +69,17 @@ router.get('/', (req, res) => {
     const books = db.prepare(query).all(...params);
     res.json(books);
   } catch (err) {
-    console.error('Fetch books error:', err);
-    res.status(500).json({ error: 'Failed to retrieve books.' });
+    next(err);
   }
 });
 
-// GET /api/books/categories - List categories
-router.get('/categories', (req, res) => {
+/**
+ * GET /api/books/categories
+ * @summary Retrieves list of distinct categories
+ * @route GET /api/books/categories
+ * @returns {200} Array of category name strings
+ */
+router.get('/categories', (req, res, next) => {
   try {
     const categories = db.prepare(`
       SELECT DISTINCT category FROM books ORDER BY category ASC
@@ -61,12 +87,17 @@ router.get('/categories', (req, res) => {
 
     res.json(categories);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch categories.' });
+    next(err);
   }
 });
 
-// GET /api/books/racks - List all rack locations
-router.get('/racks', (req, res) => {
+/**
+ * GET /api/books/racks
+ * @summary Retrieves list of distinct physical rack locations
+ * @route GET /api/books/racks
+ * @returns {200} Array of rack location objects with floor and section
+ */
+router.get('/racks', (req, res, next) => {
   try {
     const racks = db.prepare(`
       SELECT DISTINCT rack_number, floor, section FROM books ORDER BY rack_number ASC
@@ -74,22 +105,33 @@ router.get('/racks', (req, res) => {
 
     res.json(racks);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch racks.' });
+    next(err);
   }
 });
 
-// GET /api/books/:id - Get single book details + active borrow status
-router.get('/:id', (req, res) => {
+/**
+ * GET /api/books/:id
+ * @summary Retrieves full details for a single book including active loans
+ * @route GET /api/books/:id
+ * @param {number} req.params.id - Book primary key
+ * @returns {200} Book metadata object with embedded activeLoans array
+ * @returns {404} If book does not exist
+ */
+router.get('/:id', (req, res, next) => {
   try {
     const book = db.prepare(`
       SELECT * FROM books WHERE id = ?
     `).get(req.params.id);
 
+    // Error Boundary: 404 Not Found
     if (!book) {
-      return res.status(404).json({ error: 'Book not found.' });
+      return res.status(404).json({
+        success: false,
+        error: 'Book not found.'
+      });
     }
 
-    // Also get active borrowers for this book if any
+    // Retrieve active or overdue circulation records for this specific book
     const activeLoans = db.prepare(`
       SELECT br.id as loan_id, br.issue_date, br.due_date, br.status,
              u.user_id as student_roll, u.name as student_name, u.department, u.phone
@@ -104,28 +146,52 @@ router.get('/:id', (req, res) => {
       activeLoans
     });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch book details.' });
+    next(err);
   }
 });
 
-// POST /api/books - Add a new book (Librarian)
-router.post('/', (req, res) => {
+/**
+ * POST /api/books
+ * @summary Adds a new book title to the catalog
+ * @route POST /api/books
+ * @param {string} req.body.isbn - Standard ISBN identifier
+ * @param {string} req.body.title - Book title
+ * @param {string} req.body.author - Author name
+ * @param {string} req.body.category - Category
+ * @param {string} req.body.rack_number - Physical rack ID (e.g. 'Rack A-12')
+ * @param {number} [req.body.total_copies=1] - Total stock volume count
+ * 
+ * @returns {201} Newly created book entity
+ * @returns {400} Validation errors (missing field, negative count, duplicate ISBN)
+ */
+router.post('/', (req, res, next) => {
   try {
     const { isbn, title, author, category, rack_number, floor, section, total_copies } = req.body;
 
+    // Error Boundary: Mandatory field validation
     if (!isbn || !title || !author || !category || !rack_number) {
-      return res.status(400).json({ error: 'ISBN, Title, Author, Category, and Rack Number are required.' });
+      return res.status(400).json({
+        success: false,
+        error: 'ISBN, Title, Author, Category, and Rack Number are required.'
+      });
     }
 
-    const copies = parseInt(total_copies) || 1;
+    const copies = parseInt(total_copies, 10) || 1;
+    // Error Boundary: Copy volume constraint boundary
     if (copies < 1) {
-      return res.status(400).json({ error: 'Total copies must be at least 1.' });
+      return res.status(400).json({
+        success: false,
+        error: 'Total copies must be at least 1.'
+      });
     }
 
-    // Check for duplicate ISBN
+    // Error Boundary: Duplicate ISBN conflict
     const existing = db.prepare('SELECT id FROM books WHERE isbn = ?').get(isbn.trim());
     if (existing) {
-      return res.status(400).json({ error: `Book with ISBN ${isbn} already exists.` });
+      return res.status(400).json({
+        success: false,
+        error: `Book with ISBN ${isbn} already exists.`
+      });
     }
 
     const insert = db.prepare(`
@@ -147,39 +213,55 @@ router.post('/', (req, res) => {
 
     const newBook = db.prepare('SELECT * FROM books WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json({
+      success: true,
       message: 'Book added successfully!',
       book: newBook
     });
   } catch (err) {
-    console.error('Add book error:', err);
-    res.status(500).json({ error: 'Failed to add book.' });
+    next(err);
   }
 });
 
-// PUT /api/books/:id - Edit book details
-router.put('/:id', (req, res) => {
+/**
+ * PUT /api/books/:id
+ * @summary Updates metadata or physical shelf location of a book
+ * @route PUT /api/books/:id
+ * @param {number} req.params.id - Book ID
+ * @returns {200} Updated book entity
+ * @returns {400} If copy reduction violates active borrow count or ISBN conflicts
+ * @returns {404} If book does not exist
+ */
+router.put('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
     const { isbn, title, author, category, rack_number, floor, section, total_copies } = req.body;
 
     const currentBook = db.prepare('SELECT * FROM books WHERE id = ?').get(id);
     if (!currentBook) {
-      return res.status(404).json({ error: 'Book not found.' });
+      return res.status(404).json({
+        success: false,
+        error: 'Book not found.'
+      });
     }
 
-    // Check if ISBN is being changed and if it collides with another book
+    // Error Boundary: Duplicate ISBN collision during update
     if (isbn && isbn.trim() !== currentBook.isbn) {
       const duplicate = db.prepare('SELECT id FROM books WHERE isbn = ? AND id != ?').get(isbn.trim(), id);
       if (duplicate) {
-        return res.status(400).json({ error: `ISBN ${isbn} is already in use by another book.` });
+        return res.status(400).json({
+          success: false,
+          error: `ISBN ${isbn} is already in use by another book.`
+        });
       }
     }
 
-    const newTotal = parseInt(total_copies) || currentBook.total_copies;
+    const newTotal = parseInt(total_copies, 10) || currentBook.total_copies;
     const issuedCount = currentBook.total_copies - currentBook.available_copies;
 
+    // Error Boundary: Stock constraint boundary (cannot reduce below currently loaned copies)
     if (newTotal < issuedCount) {
       return res.status(400).json({
+        success: false,
         error: `Cannot reduce total copies below ${issuedCount} (currently issued copies).`
       });
     }
@@ -210,26 +292,37 @@ router.put('/:id', (req, res) => {
 
     const updated = db.prepare('SELECT * FROM books WHERE id = ?').get(id);
     res.json({
+      success: true,
       message: 'Book updated successfully!',
       book: updated
     });
   } catch (err) {
-    console.error('Update book error:', err);
-    res.status(500).json({ error: 'Failed to update book.' });
+    next(err);
   }
 });
 
-// DELETE /api/books/:id - Delete a book
-router.delete('/:id', (req, res) => {
+/**
+ * DELETE /api/books/:id
+ * @summary Removes a book title from library inventory
+ * @route DELETE /api/books/:id
+ * @param {number} req.params.id - Book ID
+ * @returns {200} Deletion confirmation
+ * @returns {400} Rejection if active loans remain outstanding
+ * @returns {404} If book does not exist
+ */
+router.delete('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
 
     const book = db.prepare('SELECT * FROM books WHERE id = ?').get(id);
     if (!book) {
-      return res.status(404).json({ error: 'Book not found.' });
+      return res.status(404).json({
+        success: false,
+        error: 'Book not found.'
+      });
     }
 
-    // Check if there are active loans
+    // Error Boundary: Cannot delete inventory with unreturned circulation loans
     const activeLoan = db.prepare(`
       SELECT COUNT(*) as count FROM borrow_records
       WHERE book_id = ? AND status IN ('active', 'overdue')
@@ -237,15 +330,18 @@ router.delete('/:id', (req, res) => {
 
     if (activeLoan.count > 0) {
       return res.status(400).json({
+        success: false,
         error: `Cannot delete "${book.title}". It has ${activeLoan.count} active borrowed copy/copies. Return them first.`
       });
     }
 
     db.prepare('DELETE FROM books WHERE id = ?').run(id);
-    res.json({ message: `Book "${book.title}" deleted successfully.` });
+    res.json({
+      success: true,
+      message: `Book "${book.title}" deleted successfully.`
+    });
   } catch (err) {
-    console.error('Delete book error:', err);
-    res.status(500).json({ error: 'Failed to delete book.' });
+    next(err);
   }
 });
 

@@ -1,25 +1,46 @@
+/**
+ * @fileoverview Book Circulation, Checkout, Return, and Overdue Fine API Routes
+ * @description Implements atomic ACID checkout transactions to prevent concurrency race
+ *              conditions, handles 1-click book returns with automated overdue fine calculation,
+ *              and provides active circulation audit feeds.
+ * @module server/routes/borrows
+ */
+
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
 
-// Fine policy parameters
-const FINE_RATE_PER_DAY = 5;   // ₹5 per day past due date
-const FINE_GRACE_DAYS = 0;     // 0 days grace period
-const MAX_FINE_CAP = 500;      // Maximum fine capped at ₹500
+/**
+ * Institutional Fine Policy Parameters
+ * @constant {number} FINE_RATE_PER_DAY - Standard overdue fine rate per calendar day (₹5)
+ * @constant {number} FINE_GRACE_DAYS - Permissible grace period before fine accrual begins (0 days)
+ * @constant {number} MAX_FINE_CAP - Ceiling limit on fine accumulation per borrow instance (₹500)
+ */
+const FINE_RATE_PER_DAY = 5;
+const FINE_GRACE_DAYS = 0;
+const MAX_FINE_CAP = 500;
 
 /**
- * Calculates overdue days and fine amount based on due date and return/current date.
+ * Calculates overdue calendar days and accrued fine amount based on due date and return/current date.
+ * 
+ * Mathematical Formulation:
+ *   Days Overdue = max(0, floor((Target Date - Due Date) / 86400000 ms))
+ *   Billable Days = max(0, Days Overdue - Grace Days)
+ *   Fine Amount = min(Billable Days * Daily Rate, Max Cap)
+ * 
  * @param {string} dueDateStr - ISO date string (YYYY-MM-DD)
- * @param {string|null} returnDateStr - ISO date string (YYYY-MM-DD) or null for active
- * @returns {object} Fine calculation breakdown
+ * @param {string|null} [returnDateStr=null] - ISO date string (YYYY-MM-DD) or null for active loans
+ * @returns {{ days_overdue: number, billable_days: number, fine_rate: number, fine_amount: number, is_overdue: boolean }}
  */
 function calculateOverdueFine(dueDateStr, returnDateStr = null) {
-  if (!dueDateStr) return { days_overdue: 0, fine_amount: 0, is_overdue: false };
+  if (!dueDateStr) {
+    return { days_overdue: 0, billable_days: 0, fine_rate: FINE_RATE_PER_DAY, fine_amount: 0, is_overdue: false };
+  }
   
   const targetDate = returnDateStr ? new Date(returnDateStr + 'T00:00:00') : new Date();
   const dueDate = new Date(dueDateStr + 'T00:00:00');
   
-  // Difference in whole calendar days
+  // Calculate difference in whole calendar days (86,400,000 ms per standard day)
   const diffTime = targetDate.getTime() - dueDate.getTime();
   const daysOverdue = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
 
@@ -46,7 +67,9 @@ function calculateOverdueFine(dueDateStr, returnDateStr = null) {
   };
 }
 
-// Helper to update overdue status dynamically
+/**
+ * Synchronizes overdue statuses for all unreturned records whose due date has lapsed.
+ */
 function updateOverdueStatuses() {
   const today = new Date().toISOString().split('T')[0];
   db.prepare(`
@@ -56,16 +79,37 @@ function updateOverdueStatuses() {
   `).run(today);
 }
 
-// POST /api/borrows/issue - Concurrency-safe atomic checkout
-router.post('/issue', (req, res) => {
+/**
+ * POST /api/borrows/issue
+ * @summary Atomic Concurrency-Safe Book Checkout
+ * @description Executes an ACID transaction checking stock availability under exclusive lock,
+ *              verifying student eligibility, preventing duplicate active loans, and decrementing
+ *              available copies to ensure zero negative stock anomalies.
+ * 
+ * @route POST /api/borrows/issue
+ * @param {number} req.body.student_id - Internal database ID of student user
+ * @param {number} req.body.book_id - Internal database ID of book catalog item
+ * @param {number} [req.body.due_days=14] - Loan duration in days (default 14 days)
+ * @param {string} [req.body.custom_due_date] - Optional explicit due date override (YYYY-MM-DD)
+ * @param {string} [req.body.notes] - Loan annotations / audit note
+ * 
+ * @returns {201} Issue confirmation with borrow_id and due_date
+ * @returns {400} If missing parameters, no stock available, or student already holds active copy
+ * @returns {404} If student or book is not found
+ */
+router.post('/issue', (req, res, next) => {
   try {
     const { student_id, book_id, due_days = 14, custom_due_date, notes } = req.body;
 
+    // Error Boundary: Mandatory parameter validation
     if (!student_id || !book_id) {
-      return res.status(400).json({ error: 'Student and Book are required.' });
+      return res.status(400).json({
+        success: false,
+        error: 'Student and Book are required.'
+      });
     }
 
-    // Calculate dates
+    // Determine issue date and target due date
     const today = new Date();
     const issue_date = today.toISOString().split('T')[0];
 
@@ -74,29 +118,30 @@ router.post('/issue', (req, res) => {
       due_date = custom_due_date;
     } else {
       const due = new Date();
-      due.setDate(due.getDate() + parseInt(due_days));
+      due.setDate(due.getDate() + parseInt(due_days, 10));
       due_date = due.toISOString().split('T')[0];
     }
 
-    // Atomic Checkout Transaction: Validates availability INSIDE the transaction to prevent concurrency race conditions
+    // ACID Transaction Boundary: Isolates stock check & mutation from concurrent requests
     const issueTx = db.transaction(() => {
-      // 1. Verify student inside transaction lock
+      // 1. Verify student eligibility under transaction lock
       const student = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(student_id);
       if (!student) {
         throw new Error('STUDENT_NOT_FOUND');
       }
 
-      // 2. Lock & inspect book stock
+      // 2. Lock & inspect book inventory availability
       const book = db.prepare('SELECT * FROM books WHERE id = ?').get(book_id);
       if (!book) {
         throw new Error('BOOK_NOT_FOUND');
       }
 
+      // Concurrency Boundary: Reject checkout if stock is exhausted
       if (book.available_copies <= 0) {
         throw new Error('NO_COPIES_AVAILABLE');
       }
 
-      // 3. Verify no active duplicate checkout by same student
+      // 3. Duplicate Active Loan Boundary: Reject multiple checkouts of same title by same student
       const existingBorrow = db.prepare(`
         SELECT id FROM borrow_records
         WHERE user_id = ? AND book_id = ? AND status IN ('active', 'overdue')
@@ -106,13 +151,13 @@ router.post('/issue', (req, res) => {
         throw new Error('ALREADY_BORROWED');
       }
 
-      // 4. Insert borrow record
+      // 4. Create transactional loan record
       const result = db.prepare(`
         INSERT INTO borrow_records (book_id, user_id, issue_date, due_date, status, notes)
         VALUES (?, ?, ?, ?, 'active', ?)
       `).run(book_id, student_id, issue_date, due_date, notes || 'Regular loan');
 
-      // 5. Atomic decrement of available copies
+      // 5. Atomic decrement of inventory stock
       const newAvailable = book.available_copies - 1;
       const newStatus = newAvailable === 0 ? 'Issued' : 'Available';
 
@@ -133,38 +178,51 @@ router.post('/issue', (req, res) => {
     try {
       const outcome = issueTx();
       return res.status(201).json({
+        success: true,
         message: `"${outcome.bookTitle}" successfully issued to ${outcome.studentName} (${outcome.studentCode}).`,
         borrow_id: outcome.borrowId,
         due_date: due_date
       });
     } catch (txErr) {
       if (txErr.message === 'STUDENT_NOT_FOUND') {
-        return res.status(404).json({ error: 'Student not found or invalid role.' });
+        return res.status(404).json({ success: false, error: 'Student not found or invalid role.' });
       }
       if (txErr.message === 'BOOK_NOT_FOUND') {
-        return res.status(404).json({ error: 'Book not found.' });
+        return res.status(404).json({ success: false, error: 'Book not found.' });
       }
       if (txErr.message === 'NO_COPIES_AVAILABLE') {
-        return res.status(400).json({ error: 'No available copies left. All copies are currently issued.' });
+        return res.status(400).json({ success: false, error: 'No available copies left. All copies are currently issued.' });
       }
       if (txErr.message === 'ALREADY_BORROWED') {
-        return res.status(400).json({ error: 'Student already has an active borrowed copy of this book.' });
+        return res.status(400).json({ success: false, error: 'Student already has an active borrowed copy of this book.' });
       }
       throw txErr;
     }
   } catch (err) {
-    console.error('Issue book error:', err);
-    res.status(500).json({ error: 'Failed to issue book due to server error.' });
+    next(err);
   }
 });
 
-// POST /api/borrows/return - Return an issued book with fine computation
-router.post('/return', (req, res) => {
+/**
+ * POST /api/borrows/return
+ * @summary 1-Click Book Return & Automated Overdue Fine Settlement
+ * @description Concurrency-safe return transaction that marks record returned, calculates
+ *              due-date difference and fine amount, logs audit notes, and increments available copies.
+ * 
+ * @route POST /api/borrows/return
+ * @param {number} req.body.borrow_id - Primary key of the borrow record
+ * @param {string} [req.body.return_notes] - Optional condition or fine receipt notes
+ * 
+ * @returns {200} Return confirmation with fine calculation breakdown
+ * @returns {400} If missing borrow_id or if book has already been returned
+ * @returns {404} If borrow record does not exist
+ */
+router.post('/return', (req, res, next) => {
   try {
     const { borrow_id, return_notes } = req.body;
 
     if (!borrow_id) {
-      return res.status(400).json({ error: 'Borrow Record ID is required.' });
+      return res.status(400).json({ success: false, error: 'Borrow Record ID is required.' });
     }
 
     const returnDate = new Date().toISOString().split('T')[0];
@@ -186,17 +244,17 @@ router.post('/return', (req, res) => {
         throw new Error('ALREADY_RETURNED');
       }
 
-      // Calculate fine on return
+      // Compute fine based on formal institutional algorithm
       const fineDetails = calculateOverdueFine(record.due_date, returnDate);
 
-      // 1. Update borrow record
+      // 1. Mark borrow record as returned with fine audit notes
       db.prepare(`
         UPDATE borrow_records
         SET return_date = ?, status = 'returned', notes = COALESCE(notes || ' | ' || ?, notes)
         WHERE id = ?
       `).run(returnDate, return_notes || `Returned (Fine: ₹${fineDetails.fine_amount})`, borrow_id);
 
-      // 2. Increment available copies
+      // 2. Increment stock count (bounded by total_copies)
       const newAvailable = Math.min(record.total_copies, record.available_copies + 1);
       db.prepare(`
         UPDATE books
@@ -214,6 +272,7 @@ router.post('/return', (req, res) => {
     try {
       const outcome = returnTx();
       return res.json({
+        success: true,
         message: `"${outcome.bookTitle}" returned successfully by ${outcome.studentName}. Stock restored to Available.`,
         return_date: returnDate,
         fine_amount: outcome.fineDetails.fine_amount,
@@ -221,21 +280,25 @@ router.post('/return', (req, res) => {
       });
     } catch (txErr) {
       if (txErr.message === 'RECORD_NOT_FOUND') {
-        return res.status(404).json({ error: 'Borrow record not found.' });
+        return res.status(404).json({ success: false, error: 'Borrow record not found.' });
       }
       if (txErr.message === 'ALREADY_RETURNED') {
-        return res.status(400).json({ error: 'This book has already been returned.' });
+        return res.status(400).json({ success: false, error: 'This book has already been returned.' });
       }
       throw txErr;
     }
   } catch (err) {
-    console.error('Return book error:', err);
-    res.status(500).json({ error: 'Failed to return book.' });
+    next(err);
   }
 });
 
-// GET /api/borrows/active - All currently issued books
-router.get('/active', (req, res) => {
+/**
+ * GET /api/borrows/active
+ * @summary Retrieves all currently active and overdue book loans
+ * @route GET /api/borrows/active
+ * @returns {200} Array of active loan records with real-time fine calculation
+ */
+router.get('/active', (req, res, next) => {
   try {
     updateOverdueStatuses();
 
@@ -261,13 +324,17 @@ router.get('/active', (req, res) => {
 
     res.json(formatted);
   } catch (err) {
-    console.error('Fetch active borrows error:', err);
-    res.status(500).json({ error: 'Failed to fetch active loans.' });
+    next(err);
   }
 });
 
-// GET /api/borrows/overdue - Overdue books list with fine details
-router.get('/overdue', (req, res) => {
+/**
+ * GET /api/borrows/overdue
+ * @summary Retrieves loans exceeding due date with detailed fine breakdown
+ * @route GET /api/borrows/overdue
+ * @returns {200} Array of overdue borrow items with calculated fine metrics
+ */
+router.get('/overdue', (req, res, next) => {
   try {
     updateOverdueStatuses();
 
@@ -293,13 +360,19 @@ router.get('/overdue', (req, res) => {
 
     res.json(formatted);
   } catch (err) {
-    console.error('Fetch overdue error:', err);
-    res.status(500).json({ error: 'Failed to fetch overdue books.' });
+    next(err);
   }
 });
 
-// GET /api/borrows/history - Full audit history
-router.get('/history', (req, res) => {
+/**
+ * GET /api/borrows/history
+ * @summary Audit log of all completed and active borrow transactions
+ * @route GET /api/borrows/history
+ * @param {string} [req.query.student_id] - Filter by specific student user ID
+ * @param {string} [req.query.status] - Filter by status ('active', 'returned', 'overdue', 'All')
+ * @returns {200} Array of historical borrow records
+ */
+router.get('/history', (req, res, next) => {
   try {
     updateOverdueStatuses();
     const { student_id, status } = req.query;
@@ -330,13 +403,18 @@ router.get('/history', (req, res) => {
     const history = db.prepare(query).all(...params);
     res.json(history);
   } catch (err) {
-    console.error('Fetch history error:', err);
-    res.status(500).json({ error: 'Failed to fetch borrowing history.' });
+    next(err);
   }
 });
 
-// GET /api/borrows/my-books/:userId - Student personal active and history
-router.get('/my-books/:userId', (req, res) => {
+/**
+ * GET /api/borrows/my-books/:userId
+ * @summary Retrieves a student's personal active loans and completed borrow history
+ * @route GET /api/borrows/my-books/:userId
+ * @param {number} req.params.userId - Student user ID
+ * @returns {200} Object with active and history arrays
+ */
+router.get('/my-books/:userId', (req, res, next) => {
   try {
     updateOverdueStatuses();
     const { userId } = req.params;
@@ -365,9 +443,12 @@ router.get('/my-books/:userId', (req, res) => {
       history: history
     });
   } catch (err) {
-    console.error('Fetch my-books error:', err);
-    res.status(500).json({ error: 'Failed to fetch student books.' });
+    next(err);
   }
 });
 
 module.exports = router;
+module.exports.calculateOverdueFine = calculateOverdueFine;
+module.exports.FINE_RATE_PER_DAY = FINE_RATE_PER_DAY;
+module.exports.FINE_GRACE_DAYS = FINE_GRACE_DAYS;
+module.exports.MAX_FINE_CAP = MAX_FINE_CAP;

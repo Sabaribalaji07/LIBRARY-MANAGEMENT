@@ -1,9 +1,24 @@
+/**
+ * @fileoverview Analytics, KPI Dashboard, and Database Introspection API Routes
+ * @description Computes real-time catalog metrics (total titles, volume count, available stock,
+ *              active loans, overdue counts), category distributions, rack layouts, and table exports.
+ * @module server/routes/stats
+ */
+
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
 
-// GET /api/stats/overview - Dashboard stats
-router.get('/overview', (req, res) => {
+/**
+ * GET /api/stats/overview
+ * @summary Real-time Dashboard KPI Metrics & Distribution Breakdown
+ * @description Aggregates title counts, total vs available copy volumes, overdue count,
+ *              category counts, and rack distribution for librarian analytics.
+ * 
+ * @route GET /api/stats/overview
+ * @returns {200} JSON { totalTitles, totalCopies, availableCopies, issuedCopies, overdueCount, totalStudents, categoryStats, rackDistribution }
+ */
+router.get('/overview', (req, res, next) => {
   try {
     const totalTitles = db.prepare('SELECT COUNT(*) as count FROM books').get().count;
     const copiesStats = db.prepare(`
@@ -48,27 +63,31 @@ router.get('/overview', (req, res) => {
       rackDistribution
     });
   } catch (err) {
-    console.error('Stats overview error:', err);
-    res.status(500).json({ error: 'Failed to fetch statistics.' });
+    next(err);
   }
 });
 
-// GET /api/stats/tables - Direct table data for DB inspection
-router.get('/tables', (req, res) => {
+/**
+ * GET /api/stats/tables
+ * @summary Database Table Introspection for Visual SQLite DB Explorer
+ * @route GET /api/stats/tables
+ * @returns {200} Sanitized dump of users, books, and borrow records
+ */
+router.get('/tables', (req, res, next) => {
   try {
-    const users = db.prepare('SELECT * FROM users').all();
+    const users = db.prepare('SELECT id, user_id, name, email, role, department, phone FROM users').all();
     const books = db.prepare('SELECT * FROM books').all();
-    const borrow_records = db.prepare(`
-      SELECT br.*, u.name as student_name, u.user_id as student_code, b.title as book_title, b.isbn as book_isbn 
-      FROM borrow_records br 
-      LEFT JOIN users u ON br.user_id = u.id 
-      LEFT JOIN books b ON br.book_id = b.id
+    const borrows = db.prepare(`
+      SELECT br.*, b.title as book_title, u.name as user_name
+      FROM borrow_records br
+      JOIN books b ON br.book_id = b.id
+      JOIN users u ON br.user_id = u.id
+      ORDER BY br.id DESC
     `).all();
 
-    res.json({ users, books, borrow_records });
+    res.json({ users, books, borrows });
   } catch (err) {
-    console.error('Tables export error:', err);
-    res.status(500).json({ error: 'Failed to fetch tables.' });
+    next(err);
   }
 });
 

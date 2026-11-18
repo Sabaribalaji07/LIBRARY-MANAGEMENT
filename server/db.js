@@ -1,51 +1,94 @@
+/**
+ * @fileoverview SQLite Database Persistence and Schema Definition Layer
+ * @description Manages SQLite database connection via `better-sqlite3`, enforces
+ *              referential integrity (Foreign Keys), configures Write-Ahead Logging (WAL),
+ *              defines schema contracts, creates performance indexes, and handles
+ *              automatic password hash migrations.
+ * @module server/db
+ */
+
 const Database = require('better-sqlite3');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 
+// Establish synchronous, zero-latency database connection
 const dbPath = path.join(__dirname, '..', 'library.sqlite');
 const db = new Database(dbPath);
 
-// Enable foreign key constraints
+// Database Pragma Optimizations
+// 1. Enforce relational foreign key constraints
 db.pragma('foreign_keys = ON');
+// 2. Enable Write-Ahead Logging (WAL) for high concurrency reader/writer isolation
+db.pragma('journal_mode = WAL');
+// 3. Set busy timeout (5000ms) to gracefully handle database locks during concurrent writes
+db.pragma('busy_timeout = 5000');
 
-// Initialize tables
+/**
+ * Initializes database tables, indexes, baseline seed data, and credentials migration.
+ * Called automatically on server boot.
+ * 
+ * Database Schema:
+ * - `users`: Master user repository for librarians and students with bcrypt credentials.
+ * - `books`: Catalog inventory tracking titles, ISBNs, physical shelf racks, and real-time copies.
+ * - `borrow_records`: Transactional loan ledger tracking issue/due dates, returns, and status.
+ */
 function initDatabase() {
   db.exec(`
+    -- -------------------------------------------------------------
+    -- Table: users (Authentication, Profiles & Role Boundaries)
+    -- -------------------------------------------------------------
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('student', 'librarian')),
-      department TEXT,
-      phone TEXT
+      user_id TEXT UNIQUE NOT NULL,                       -- Student Roll Number or Librarian ID (e.g. LIB001, CS2101)
+      name TEXT NOT NULL,                                  -- Full display name
+      email TEXT UNIQUE NOT NULL,                          -- Unique institutional email
+      password TEXT NOT NULL,                              -- Salted BCrypt password hash ($2a$10$...)
+      role TEXT NOT NULL CHECK(role IN ('student', 'librarian')), -- Access control role boundary
+      department TEXT,                                     -- Department / Faculty designation
+      phone TEXT                                           -- Contact phone for overdue SMS/call alerts
     );
 
+    -- -------------------------------------------------------------
+    -- Table: books (Library Inventory & Shelf/Rack Geolocation)
+    -- -------------------------------------------------------------
     CREATE TABLE IF NOT EXISTS books (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      isbn TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      author TEXT NOT NULL,
-      category TEXT NOT NULL,
-      rack_number TEXT NOT NULL,
-      floor TEXT DEFAULT 'Floor 1',
-      section TEXT DEFAULT 'Main Wing',
-      total_copies INTEGER NOT NULL DEFAULT 1,
-      available_copies INTEGER NOT NULL DEFAULT 1,
+      isbn TEXT UNIQUE NOT NULL,                          -- 13-digit standard ISBN barcode
+      title TEXT NOT NULL,                                 -- Book title
+      author TEXT NOT NULL,                                -- Author(s)
+      category TEXT NOT NULL,                              -- Academic subject category
+      rack_number TEXT NOT NULL,                           -- Physical rack location (e.g. 'Rack A-12')
+      floor TEXT DEFAULT 'Floor 1',                        -- Building floor
+      section TEXT DEFAULT 'Main Wing',                    -- Library section / bay
+      total_copies INTEGER NOT NULL DEFAULT 1 CHECK(total_copies >= 0), -- Total physical volumes
+      available_copies INTEGER NOT NULL DEFAULT 1 CHECK(available_copies >= 0), -- Current unissued volumes
       status TEXT NOT NULL DEFAULT 'Available' CHECK(status IN ('Available', 'Issued'))
     );
 
+    -- -------------------------------------------------------------
+    -- Table: borrow_records (Circulation Ledger & Fine Tracking)
+    -- -------------------------------------------------------------
     CREATE TABLE IF NOT EXISTS borrow_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      issue_date TEXT NOT NULL,
-      due_date TEXT NOT NULL,
-      return_date TEXT,
+      book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,  -- Cascades on book removal
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- Cascades on user removal
+      issue_date TEXT NOT NULL,                                         -- ISO Date string (YYYY-MM-DD)
+      due_date TEXT NOT NULL,                                           -- ISO Date string (YYYY-MM-DD)
+      return_date TEXT,                                                 -- NULL when unreturned
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'returned', 'overdue')),
-      notes TEXT
+      notes TEXT                                                        -- Transaction audit trail & fine logs
     );
+
+    -- -------------------------------------------------------------
+    -- Performance Indexes for Search & Concurrency Fast-Lookup
+    -- -------------------------------------------------------------
+    CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
+    CREATE INDEX IF NOT EXISTS idx_books_category ON books(category);
+    CREATE INDEX IF NOT EXISTS idx_books_rack ON books(rack_number);
+    CREATE INDEX IF NOT EXISTS idx_borrows_user ON borrow_records(user_id);
+    CREATE INDEX IF NOT EXISTS idx_borrows_book ON borrow_records(book_id);
+    CREATE INDEX IF NOT EXISTS idx_borrows_status ON borrow_records(status);
+    CREATE INDEX IF NOT EXISTS idx_borrows_active ON borrow_records(user_id, book_id, status);
   `);
 
   seedData();
@@ -412,6 +455,20 @@ function seedData() {
         notes: 'Returned on time in good condition'
       });
     }
+
+    // Invariant Synchronization: Recompute available_copies strictly from active circulation records
+    db.prepare(`
+      UPDATE books
+      SET available_copies = total_copies - (
+        SELECT COUNT(*) FROM borrow_records br
+        WHERE br.book_id = books.id AND br.status IN ('active', 'overdue')
+      )
+    `).run();
+
+    db.prepare(`
+      UPDATE books
+      SET status = CASE WHEN available_copies > 0 THEN 'Available' ELSE 'Issued' END
+    `).run();
 
     console.log('Database seeded successfully with users, books, and realistic borrow records.');
   }
